@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>碳水循环 & 基础代谢计算</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body { background:#f5f7fa; position:relative; font-family:'Arial','Microsoft YaHei',sans-serif; }
+body::before {
+  content:"周周"; position:absolute; top:50%; left:50%;
+  font-size:200px; color:rgba(200,200,200,0.08);
+  transform:translate(-50%,-50%) rotate(-30deg);
+  pointer-events:none; user-select:none; z-index:0;
+}
+.container { background:#fff; padding:20px 25px; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,0.08); position:relative; z-index:1; margin-top:30px; margin-bottom:30px; }
+h1 { text-align:center; margin-bottom:20px; font-weight:600; }
+.error { color:#d9534f; font-weight:600; margin-top:10px; }
+table th, table td { text-align:center; vertical-align:middle; }
+.row-high { background:#fff3cd !important; }
+.row-medium { background:#e2e3ff !important; }
+.row-low { background:#d1f7e3 !important; }
+.actions { margin-top:15px; }
+canvas { max-width:100%; margin-top:25px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 顶部制作标识 -->
+  <div style="text-align:center; margin-bottom:5px;">
+    <span style="font-size:18px; color:rgba(100,100,100,0.7); font-weight:500;">
+      周周(自律版)制作
+    </span>
+  </div>
+
+  <!-- 主标题 -->
+  <h1>基础代谢 & 碳水循环计算器</h1>
+
+  <div id="error" class="error"></div>
+
+  <div class="row g-3">
+    <div class="col-md-2">
+      <label class="form-label">性别</label>
+      <select id="gender" class="form-select">
+        <option value="male">男</option>
+        <option value="female">女</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">年龄</label>
+      <input type="number" id="age" class="form-control" value="25" min="1">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">身高(cm)</label>
+      <input type="number" id="height" class="form-control" value="175" min="50">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">体重(kg)</label>
+      <input type="number" id="weight" class="form-control" value="70" min="1" step="0.1">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">体质类型</label>
+      <select id="bodyType" class="form-select">
+        <option value="endo">内胚型</option>
+        <option value="meso">中胚型</option>
+        <option value="ecto">外胚型</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label">蛋白质(g/kg)</label>
+      <input type="text" id="proteinRange" class="form-control" value="1.0-1.2">
+    </div>
+    <div class="col-md-3 mt-2">
+      <label class="form-label">运动强度</label>
+      <select id="activity" class="form-select">
+        <option value="1.3">正常工作/学习 1.3</option>
+        <option value="1.55">一周三练 1.55</option>
+        <option value="1.65">一周五练 1.65</option>
+        <option value="2.0">运动员强度 2.0</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="d-grid mt-3">
+    <button class="btn btn-primary btn-lg" id="calcBtn">计算 & 生成表格</button>
+  </div>
+
+  <div class="actions d-flex flex-wrap gap-2">
+    <button class="btn btn-success" id="exportXlsxBtn">下载 XLSX</button>
+    <button class="btn btn-secondary" id="exportCsvBtn">下载 CSV</button>
+    <button class="btn btn-info text-white" id="copyBtn">复制到剪贴板</button>
+  </div>
+
+  <div id="basicInfo" class="mt-4"></div>
+  <div id="result" class="mt-4"></div>
+
+  <canvas id="calorieChart"></canvas>
+</div>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+// === 工具函数 ===
+function parseProteinRange(input){
+  input=input.trim();
+  if(!input) return null;
+  if(input.includes('-')){
+    const parts=input.split('-').map(x=>parseFloat(x.trim()));
+    if(parts.length===2 && !isNaN(parts[0]) && !isNaN(parts[1])) return {min:parts[0], max:parts[1]};
+  } else {
+    const v=parseFloat(input);
+    if(!isNaN(v)) return {min:v, max:v};
+  }
+  return null;
+}
+function formatG(v){ return ((Math.round(v*10))/10).toFixed(1)+' g'; }
+function formatK(v){ return Math.round(v)+' kcal'; }
+function fixedDays(){ return ['高','中','低','中','高','中','低']; }
+
+let chartInstance = null;
+
+// === 主计算 ===
+document.getElementById('calcBtn').addEventListener('click', ()=>{
+  document.getElementById('error').textContent='';
+  const gender=document.getElementById('gender').value;
+  const age=parseFloat(document.getElementById('age').value);
+  const height=parseFloat(document.getElementById('height').value);
+  const weight=parseFloat(document.getElementById('weight').value);
+  const bodyType=document.getElementById('bodyType').value;
+  const protein=parseProteinRange(document.getElementById('proteinRange').value);
+  const activity=parseFloat(document.getElementById('activity').value);
+  if(!(weight>0 && height>0 && age>0) || !protein){
+    document.getElementById('error').textContent='请输入有效信息';
+    return;
+  }
+
+  // BMR & TDEE
+  let BMR = gender==='male'? (10*weight+6.25*height-5*age+5) : (10*weight+6.25*height-5*age-161);
+  let TDEE = BMR*activity;
+
+  // 基础信息表格
+  let basicHtml='<table class="table table-bordered"><thead><tr><th>属性</th><th>数值</th></tr></thead><tbody>';
+  basicHtml+=`<tr><td>身高</td><td>${height} cm</td></tr>`;
+  basicHtml+=`<tr><td>体重</td><td>${weight} kg</td></tr>`;
+  basicHtml+=`<tr><td>基础代谢 (BMR)</td><td>${formatK(BMR)}</td></tr>`;
+  basicHtml+=`<tr><td>估算行为消耗 (TDEE)</td><td>${formatK(TDEE)}</td></tr>`;
+  basicHtml+='</tbody></table>';
+  document.getElementById('basicInfo').innerHTML=basicHtml;
+
+  // 碳水循环
+  let carbPerKg=0,fatPerKg=0;
+  if(bodyType==='endo'){ carbPerKg=2; fatPerKg=0.8; }
+  else if(bodyType==='meso'){ carbPerKg=2.5; fatPerKg=1; }
+  else{ carbPerKg=3; fatPerKg=1.2; }
+
+  const dailyCarb=carbPerKg*weight;
+  const dailyFat=fatPerKg*weight;
+  const dailyProtMin=protein.min*weight;
+  const dailyProtMax=protein.max*weight;
+
+  const weeklyCarb=dailyCarb*7;
+  const weeklyFat=dailyFat*7;
+
+  const perDay={ high:{carb:weeklyCarb*0.5/2, fat:weeklyFat*0.15/2}, low:{carb:weeklyCarb*0.15/2, fat:weeklyFat*0.5/2}, medium:{carb:weeklyCarb*0.35/3, fat:weeklyFat*0.35/3} };
+  const dayTypes=fixedDays();
+
+  const rows=[]; let csvArr=[['天','日型','碳水(g)','脂肪(g)','蛋白_min(g)','蛋白_max(g)','总热量_min(kcal)','总热量_max(kcal)','热量缺口(kcal)']];
+  let html='<table class="table table-bordered"><thead><tr><th>天</th><th>日型</th><th>碳水</th><th>脂肪</th><th>蛋白</th><th>总热量</th><th>热量缺口</th></tr></thead><tbody>';
+
+  const chartLabels = [];
+  const intakeData = [];
+  const tdeeData = [];
+  const deficitData = [];
+  const bgColors = [];
+
+  for(let i=0;i<7;i++){
+    const type=dayTypes[i];
+    let carb=0,fat=0;
+    if(type==='高'){ carb=perDay.high.carb; fat=perDay.high.fat; bgColors.push('rgba(255, 235, 59,0.2)'); }
+    else if(type==='中'){ carb=perDay.medium.carb; fat=perDay.medium.fat; bgColors.push('rgba(102, 178, 255,0.2)'); }
+    else{ carb=perDay.low.carb; fat=perDay.low.fat; bgColors.push('rgba(102, 255, 178,0.2)'); }
+
+    const kcalMin=carb*4+fat*9+dailyProtMin*4;
+    const kcalMax=carb*4+fat*9+dailyProtMax*4;
+    const kcalAvg=(kcalMin+kcalMax)/2;
+    const deficit=TDEE - kcalAvg;
+
+    rows.push({天:i+1, 日型:type, 碳水:Math.round(carb*10)/10, 脂肪:Math.round(fat*10)/10, 蛋白_min:Math.round(dailyProtMin*10)/10, 蛋白_max:Math.round(dailyProtMax*10)/10, kcalMin:Math.round(kcalMin), kcalMax:Math.round(kcalMax), deficit:Math.round(deficit)});
+    csvArr.push([i+1,type,Math.round(carb*10)/10,Math.round(fat*10)/10,Math.round(dailyProtMin*10)/10,Math.round(dailyProtMax*10)/10,Math.round(kcalMin),Math.round(kcalMax),Math.round(deficit)]);
+
+    const protStr=(dailyProtMin===dailyProtMax)? formatG(dailyProtMin) : formatG(dailyProtMin)+' — '+formatG(dailyProtMax);
+    const kcalStr=(Math.round(kcalMin)===Math.round(kcalMax))? formatK(kcalMin) : formatK(kcalMin)+' — '+formatK(kcalMax);
+    const rowClass=type==='高'? 'row-high':(type==='中'?'row-medium':'row-low');
+    html+=`<tr class="${rowClass}"><td>${i+1}</td><td>${type}</td><td>${formatG(carb)}</td><td>${formatG(fat)}</td><td>${protStr}</td><td>${kcalStr}</td><td>${Math.round(deficit)}</td></tr>`;
+
+    chartLabels.push('第'+(i+1)+'天');
+    intakeData.push(Math.round(kcalAvg));
+    tdeeData.push(Math.round(TDEE));
+    deficitData.push(Math.round(deficit));
+  }
+  html+='</tbody></table>';
+  document.getElementById('result').innerHTML=html;
+  window._exportData={rows,csvArr};
+
+  // === 绘制图表 ===
+  const ctx=document.getElementById('calorieChart').getContext('2d');
+  if(chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels:chartLabels,
+      datasets:[
+        {label:'摄入热量 (kcal)', data:intakeData, backgroundColor:bgColors, yAxisID:'y', borderColor:'#10b981', borderWidth:1},
+        {label:'TDEE (kcal)', type:'line', data:tdeeData, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.2)', yAxisID:'y', tension:0.3},
+        {label:'热量缺口 (kcal)', type:'line', data:deficitData, borderColor:'#f59e0b', backgroundColor:'rgba(245,158,11,0.2)', yAxisID:'y', tension:0.3}
+      ]
+    },
+    options:{
+      responsive:true,
+      interaction:{mode:'index', intersect:false},
+      plugins:{legend:{position:'top'}},
+      scales:{y:{beginAtZero:true}}
+    }
+  });
+});
+
+// === 导出与复制 ===
+document.getElementById('exportXlsxBtn').addEventListener('click',()=>{
+  if(!window._exportData){ alert('请先生成表格'); return; }
+  const wb=XLSX.utils.book_new();
+  const ws=XLSX.utils.json_to_sheet(window._exportData.rows);
+  XLSX.utils.book_append_sheet(wb,ws,"摄入计划");
+  XLSX.writeFile(wb,"carb_cycling_plan.xlsx");
+});
+document.getElementById('exportCsvBtn').addEventListener('click',()=>{
+  if(!window._exportData){ alert('请先生成表格'); return; }
+  const csv=window._exportData.csvArr.map(r=>r.join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='carb_cycling_plan.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+});
+document.getElementById('copyBtn').addEventListener('click',async()=>{
+  if(!window._exportData){ alert('请先生成表格'); return; }
+  const tsv=window._exportData.csvArr.map(r=>r.join('\t')).join('\n');
+  try{ await navigator.clipboard.writeText(tsv); alert('已复制到剪贴板'); }
+  catch(e){ alert('复制失败，可能浏览器限制剪贴板 API'); }
+});
+</script>
+</body>
+</html>
